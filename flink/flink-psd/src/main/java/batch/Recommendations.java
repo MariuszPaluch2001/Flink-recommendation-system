@@ -10,8 +10,17 @@ import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.utils.DataSetUtils;
 import org.apache.flink.graph.*;
 import org.apache.flink.graph.library.LabelPropagation;
+import org.apache.flink.streaming.api.datastream.DataStreamSource;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.connectors.redis.RedisSink;
 import org.apache.flink.types.NullValue;
 import org.apache.flink.util.Collector;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
+import org.apache.flink.streaming.connectors.redis.common.config.FlinkJedisPoolConfig;
+import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommand;
+import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommandDescription;
+import org.apache.flink.streaming.connectors.redis.common.mapper.RedisMapper;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -26,18 +35,20 @@ public class Recommendations {
         }
 
         ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        StreamExecutionEnvironment env2 = StreamExecutionEnvironment.getExecutionEnvironment();
+        FlinkJedisPoolConfig conf = new FlinkJedisPoolConfig.Builder().setHost("127.0.0.1").build();
 
         DataSet<Edge<Long, Double>> edgeList = getEdgeList(env);
-
         Graph<Long, Long, Double> userTopProducts = getUserTopProducts(edgeList, env);
-
         DataSet<Edge<Long, NullValue>> similarUsers = getSimilarUsers(userTopProducts);
-
         Graph<Long, Long, NullValue> similarUsersGraph = extractGraph(similarUsers, env);
-
         DataSet<Tuple2<Long, Long>> idsWithInitialLabels = initWithLabels(similarUsersGraph);
-
         DataSet<Vertex<Long, Long>> verticesWithCommunity = runLabelPropagation(similarUsersGraph, idsWithInitialLabels);
+
+        DataStreamSource<Vertex<Long, Long>> stream = env2.fromCollection(verticesWithCommunity.collect());
+        stream.addSink(new RedisSink<>(conf, new RedisUserGroupMapper()));
+        stream.addSink(new RedisSink<>(conf, new RedisGroupUsersMapper()));
+        env2.execute();
 
         showDetectedCommunitiesSize(verticesWithCommunity);
     }
@@ -100,12 +111,9 @@ public class Recommendations {
                 .lineDelimiter("\n")
                 .fieldDelimiter(",")
                 .types(Long.class, Long.class, Double.class)
-                .filter(new FilterFunction<Tuple3<Long, Long, Double>>() {
-                    @Override
-                    public boolean filter(Tuple3<Long, Long, Double> value) {
-                        return value.f0 < 1000;
-                    }
-                }).filter(new FilterBadRatings()).map(new MapFunction<Tuple3<Long, Long, Double>, Edge<Long, Double>>() {
+                .filter(value -> value.f0 < 1000)
+                .filter(new FilterBadRatings())
+                .map(new MapFunction<Tuple3<Long, Long, Double>, Edge<Long, Double>>() {
                     public Edge<Long, Double> map(Tuple3<Long, Long, Double> e) {
                         return new Edge<>(e.f0, e.f1, e.f2);
                     }
@@ -135,6 +143,41 @@ public class Recommendations {
     private static final class FilterBadRatings implements FilterFunction<Tuple3<Long, Long, Double>> {
         public boolean filter(Tuple3<Long, Long, Double> value) {
             return value.f2 > 3.0;
+        }
+    }
+
+    public static class RedisUserGroupMapper implements RedisMapper<Vertex<Long, Long>> {
+
+        @Override
+        public RedisCommandDescription getCommandDescription() {
+            return new RedisCommandDescription(RedisCommand.SET);
+        }
+
+        @Override
+        public String getKeyFromData(Vertex<Long, Long> data) {
+            return "userGroup:" + data.f0.toString();
+        }
+
+        @Override
+        public String getValueFromData(Vertex<Long, Long> data) {
+            return data.f1.toString();
+        }
+    }
+    public static class RedisGroupUsersMapper implements RedisMapper<Vertex<Long, Long>> {
+
+        @Override
+        public RedisCommandDescription getCommandDescription() {
+            return new RedisCommandDescription(RedisCommand.SADD);
+        }
+
+        @Override
+        public String getKeyFromData(Vertex<Long, Long> data) {
+            return "groupUserSet:" + data.f1.toString();
+        }
+
+        @Override
+        public String getValueFromData(Vertex<Long, Long> data) {
+            return data.f0.toString();
         }
     }
 }
