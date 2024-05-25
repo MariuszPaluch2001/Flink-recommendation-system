@@ -29,6 +29,6 @@ if __name__ == "__main__":
     print(f"In DB rows number: {in_db_df.shape[0]}")
     print(f"Stream rows number: {stream_df.shape[0]}")
 
-    in_db_df.to_csv(in_db_fn)
-    stream_df.to_csv(stream_fn)
+    in_db_df.to_csv(in_db_fn, index=False, header=False)
+    stream_df.to_csv(stream_fn, index=False, header=False)
 
