@@ -1,25 +1,29 @@
 package streaming.models;
 
-import org.apache.flink.api.common.serialization.AbstractDeserializationSchema;
-import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.DeserializationFeature;
-import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.flink.api.common.serialization.DeserializationSchema;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
+import streaming.models.Review;
 
 import java.io.IOException;
 
+public class ReviewDeserialization implements
+        DeserializationSchema<Review> {
 
-public class ReviewDeserialization extends AbstractDeserializationSchema<Review> {
-    private static final long serialVersionUID = 1L;
-
-    private transient ObjectMapper objectMapper;
+    static ObjectMapper objectMapper = new ObjectMapper();
 
     @Override
-    public void open(InitializationContext context) {
-        objectMapper = new ObjectMapper();
-        objectMapper.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+    public Review deserialize(byte[] bytes) throws IOException {
+        return objectMapper.readValue(bytes, Review.class);
     }
 
     @Override
-    public Review deserialize(byte[] message) throws IOException {
-        return objectMapper.readValue(message, Review.class);
+    public boolean isEndOfStream(Review review) {
+        return false;
+    }
+
+    @Override
+    public TypeInformation<Review> getProducedType() {
+        return TypeInformation.of(Review.class);
     }
 }
