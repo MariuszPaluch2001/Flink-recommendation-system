@@ -25,7 +25,7 @@ def generate_temp():
 
 
 def write_to_kafka(env):
-    type_info = Types.ROW([Types.INT(), Types.INT(), Types.FLOAT(), Types.INT()])
+    type_info = Types.ROW_NAMED(["userId", "productId", "review", "timestamp"], [Types.LONG(), Types.LONG(), Types.DOUBLE(), Types.LONG()])
     serialization_schema = (
         JsonRowSerializationSchema.Builder().with_type_info(type_info).build()
     )
