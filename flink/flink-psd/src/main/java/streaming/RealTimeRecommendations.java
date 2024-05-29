@@ -7,6 +7,7 @@ import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.serialization.SimpleStringEncoder;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.api.java.operators.MapOperator;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
@@ -14,6 +15,7 @@ import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 import org.apache.flink.connector.kafka.source.reader.deserializer.KafkaRecordDeserializationSchema;
+import org.apache.flink.graph.Vertex;
 import org.apache.flink.shaded.curator5.org.apache.curator.framework.recipes.locks.PredicateResults;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.AllWindowedStream;
@@ -25,6 +27,9 @@ import org.apache.flink.streaming.api.functions.sink.PrintSinkFunction;
 import org.apache.flink.streaming.api.functions.sink.filesystem.StreamingFileSink;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
+import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommand;
+import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommandDescription;
+import org.apache.flink.streaming.connectors.redis.common.mapper.RedisMapper;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import redis.clients.jedis.Jedis;
@@ -37,6 +42,7 @@ import org.apache.flink.connector.file.sink.FileSink;
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.DefaultRollingPolicy;
 
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -55,9 +61,9 @@ public class RealTimeRecommendations {
                 .build();
 
         DataStream<Review> ds = env.fromSource(source, WatermarkStrategy.forMonotonousTimestamps(), "Kafka Source");
-        SingleOutputStreamOperator<Tuple2<Long, Set<Long>>> userGroup = ds
-                .map(new UserGroupRedisMapper())
-                .map(new GroupUsersRedisMapper());
+
+        SingleOutputStreamOperator<Tuple2<String, Set<String>>> userGroup = ds
+                .map(new RedisUserRecommendationMapping());
 
         final FileSink<String> sink = FileSink
                 .forRowFormat(new Path("/home/psd/output"), new SimpleStringEncoder<String>("UTF-8"))
@@ -68,98 +74,52 @@ public class RealTimeRecommendations {
                                 .withMaxPartSize(1024 * 1024 * 1024)
                                 .build())
                 .build();
-        userGroup
+        SingleOutputStreamOperator<String> dupa = userGroup
                 .map(
-                    (MapFunction<Tuple2<Long, Set<Long>>, String>) val -> new String(val.f0.toString() + ":" + val.f1.toString())
-                )
-                .sinkTo(sink);
+                    (MapFunction<Tuple2<String, Set<String>>, String>) val -> val.f0 + ":" + val.f1
+                );
+        dupa.sinkTo(sink);
         env.execute();
     }
-    public static class UserGroupRedisMapper extends RichMapFunction<Review, Tuple2<Long, Long>> {
+    public static class Mapper implements RedisMapper<Review> {
 
+        @Override
+        public RedisCommandDescription getCommandDescription() {
+            return new RedisCommandDescription(RedisCommand.SADD);
+        }
+
+        @Override
+        public String getKeyFromData(Review data) {
+            return "";
+        }
+
+        @Override
+        public String getValueFromData(Review data) {
+            return "";
+        }
+    }
+    public static class RedisUserRecommendationMapping extends RichMapFunction<Review, Tuple2<String, Set<String>>> {
         private transient Jedis jedis;
 
         @Override
-        public Tuple2<Long, Long> map(Review review) {
+        public Tuple2<String, Set<String>> map(Review review) {
             String userID = review.userId.toString();
-            String userGroup = Objects.toString(jedis.get("userGroup:" + userID), "-1");
-            return new Tuple2<>(Long.valueOf(userID), Long.valueOf(userGroup));
+            Set<String> recommendations = jedis.smembers("UserRecommendations:" + userID);
+            recommendations = recommendations != null ? recommendations : Collections.emptySet();
+            recommendations = recommendations.stream().filter(Objects::nonNull).collect(Collectors.toSet());
+            return new Tuple2<>(userID, recommendations);
+
         }
 
         @Override
         public void open(Configuration parameters) {
-            // open connection to Redis, for example
             jedis = new Jedis("localhost");
         }
 
         @Override
         public void close() {
-            // close connection to Redis
             jedis.close();
         }
     }
-    public static class GroupUsersRedisMapper extends RichMapFunction<Tuple2<Long, Long>, Tuple2<Long, Set<Long>>> {
 
-        private transient Jedis jedis;
-
-        @Override
-        public Tuple2<Long, Set<Long>> map(Tuple2<Long, Long> userGroup) {
-            Long userID = userGroup.f0;
-            String groupID = userGroup.f1.toString();
-            Set<String> members = jedis.smembers("groupUserSet:" + groupID);
-            if (members == null)
-                return new Tuple2<>(userID, Collections.emptySet());
-            Set<Long> groupUsers = members
-                    .stream()
-                    .map(Long::valueOf)
-                    .filter(val -> !val.equals(userID))
-                    .collect(Collectors.toSet());
-            return new Tuple2<>(userID, groupUsers);
-        }
-
-        @Override
-        public void open(Configuration parameters) {
-            // open connection to Redis, for example
-            jedis = new Jedis("localhost");
-        }
-
-        @Override
-        public void close() {
-            // close connection to Redis
-            jedis.close();
-        }
-    }
-    public static class UserProductsMapper extends RichMapFunction<Tuple2<Long, Set<Long>>, Tuple2<Long, Set<Long>>> {
-
-        private transient Jedis jedis;
-
-        @Override
-        public Tuple2<Long, Set<Long>> map(Tuple2<Long, Set<Long>> similiarUsers) {
-            Long userID = similiarUsers.f0;
-            Set<Long> similiarIDs = similiarUsers.f1;
-            Set<Long> recommendedProducts = similiarIDs
-                    .stream()
-                    .flatMap(val -> ObjectUtils.firstNonNull(
-                            jedis.smembers("userProducts:" + val.toString()),
-                            Collections.<String>emptySet()
-                            ).stream()
-                    )
-                    .map(Long::valueOf)
-                    .collect(Collectors.toSet());
-            
-            return new Tuple2<>(userID, recommendedProducts);
-        }
-
-        @Override
-        public void open(Configuration parameters) {
-            // open connection to Redis, for example
-            jedis = new Jedis("localhost");
-        }
-
-        @Override
-        public void close() {
-            // close connection to Redis
-            jedis.close();
-        }
-    }
 }

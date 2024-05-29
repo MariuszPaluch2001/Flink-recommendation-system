@@ -4,26 +4,18 @@ import org.apache.flink.api.common.functions.*;
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.operators.DistinctOperator;
+import org.apache.flink.api.java.operators.FilterOperator;
 import org.apache.flink.api.java.operators.MapOperator;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.utils.DataSetUtils;
 import org.apache.flink.graph.*;
 import org.apache.flink.graph.library.LabelPropagation;
-import org.apache.flink.streaming.api.datastream.DataStreamSource;
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.connectors.redis.RedisSink;
 import org.apache.flink.types.NullValue;
 import org.apache.flink.util.Collector;
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
-import org.apache.flink.streaming.connectors.redis.common.config.FlinkJedisPoolConfig;
-import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommand;
-import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommandDescription;
-import org.apache.flink.streaming.connectors.redis.common.mapper.RedisMapper;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 public class Recommendations {
     private static String recommendationsInputPath = null;
@@ -35,13 +27,24 @@ public class Recommendations {
         }
 
         ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-        DataSet<Edge<Long, Double>> edgeList = getEdgeList(env);
+        FilterOperator<Tuple3<Long, Long, Double>> reviews = getReviews(env);
+        DataSet<Edge<Long, Double>> edgeList = reviews.map(new MapFunction<Tuple3<Long, Long, Double>, Edge<Long, Double>>() {
+            public Edge<Long, Double> map(Tuple3<Long, Long, Double> e) {
+                return new Edge<>(e.f0, e.f1, e.f2);
+            }
+        });
         Graph<Long, Long, Double> userTopProducts = getUserTopProducts(edgeList, env);
         DataSet<Edge<Long, NullValue>> similarUsers = getSimilarUsers(userTopProducts);
         Graph<Long, Long, NullValue> similarUsersGraph = extractGraph(similarUsers, env);
         DataSet<Tuple2<Long, Long>> idsWithInitialLabels = initWithLabels(similarUsersGraph);
         DataSet<Vertex<Long, Long>> verticesWithCommunity = runLabelPropagation(similarUsersGraph, idsWithInitialLabels);
 
+        Map<Long, Set<Long>> userProducts = new HashMap<>();
+        for (Tuple3<Long, Long, Double> review : reviews.collect()) {
+            Long userID = review.f0;
+            Long productID = review.f1;
+            userProducts.computeIfAbsent(userID, k -> new HashSet<>()).add(productID);
+        }
         Map<Long, Set<Long>> groupUsers = new HashMap<>();
         for (Vertex<Long, Long> vertex : verticesWithCommunity.collect()) {
             Long userID = vertex.getId();
@@ -51,16 +54,16 @@ public class Recommendations {
 
         Jedis jedis = new Jedis("localhost");
         jedis
-                .keys("UserCommunitySet:*")
+                .keys("UserRecommendations:*")
                 .forEach(jedis::del);
 
         for (Vertex<Long, Long> vertex : verticesWithCommunity.collect()) {
-            String userID = vertex.getId().toString();
-            for (Long similiar : groupUsers.get(vertex.getValue())) {
-                String similiarID = similiar.toString();
-                if (!similiarID.equals(userID))
-                    jedis.sadd("UserCommunitySet:" + userID, similiarID);
-            }
+            Long userID = vertex.getId();
+            Set<Long> selectedUserProducts = userProducts.get(userID);
+            for (Long similiar : groupUsers.get(vertex.getValue()))
+                for (Long productID : userProducts.get(similiar))
+                    if (!selectedUserProducts.contains(productID))
+                        jedis.sadd("UserRecommendations:" + userID, productID.toString());
         }
         showDetectedCommunitiesSize(verticesWithCommunity);
 
@@ -120,6 +123,15 @@ public class Recommendations {
         }, env);
     }
 
+    private static FilterOperator<Tuple3<Long, Long, Double>> getReviews(ExecutionEnvironment env) {
+        return env.readCsvFile(recommendationsInputPath)
+                .lineDelimiter("\n")
+                .fieldDelimiter(",")
+                .types(Long.class, Long.class, Double.class)
+                .filter(value -> value.f0 < 1000)
+                .filter(new FilterBadRatings());
+    }
+
     private static MapOperator<Tuple3<Long, Long, Double>, Edge<Long, Double>> getEdgeList(ExecutionEnvironment env) {
         return env.readCsvFile(recommendationsInputPath)
                 .lineDelimiter("\n")
@@ -157,41 +169,6 @@ public class Recommendations {
     private static final class FilterBadRatings implements FilterFunction<Tuple3<Long, Long, Double>> {
         public boolean filter(Tuple3<Long, Long, Double> value) {
             return value.f2 > 3.0;
-        }
-    }
-
-    public static class RedisUserGroupMapper implements RedisMapper<Vertex<Long, Long>> {
-
-        @Override
-        public RedisCommandDescription getCommandDescription() {
-            return new RedisCommandDescription(RedisCommand.SET);
-        }
-
-        @Override
-        public String getKeyFromData(Vertex<Long, Long> data) {
-            return "userGroup:" + data.f0.toString();
-        }
-
-        @Override
-        public String getValueFromData(Vertex<Long, Long> data) {
-            return data.f1.toString();
-        }
-    }
-    public static class RedisGroupUsersMapper implements RedisMapper<Vertex<Long, Long>> {
-
-        @Override
-        public RedisCommandDescription getCommandDescription() {
-            return new RedisCommandDescription(RedisCommand.SADD);
-        }
-
-        @Override
-        public String getKeyFromData(Vertex<Long, Long> data) {
-            return "groupUserSet:" + data.f1.toString();
-        }
-
-        @Override
-        public String getValueFromData(Vertex<Long, Long> data) {
-            return data.f0.toString();
         }
     }
 }
