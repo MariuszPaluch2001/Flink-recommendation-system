@@ -50,6 +50,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 public class RealTimeRecommendations {
+    public static long MAX_RECOMMENDATION_SIZE = 20;
     public static void main(String[] args) throws Exception {
         System.out.println("Real time recommendation");
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -76,11 +77,11 @@ public class RealTimeRecommendations {
                                 .withMaxPartSize(1024 * 1024 * 1024)
                                 .build())
                 .build();
-        SingleOutputStreamOperator<String> dupa = userGroup
+        SingleOutputStreamOperator<String> fileOutput = userGroup
                 .map(
                     (MapFunction<Tuple2<String, Set<String>>, String>) val -> val.f0 + ":" + val.f1
                 );
-        dupa.sinkTo(sink);
+        fileOutput.sinkTo(sink);
         env.execute();
     }
     public static class userRatingMapper implements RedisMapper<Review> {
@@ -107,8 +108,11 @@ public class RealTimeRecommendations {
         public Tuple2<String, Set<String>> map(Review review) {
             String userID = review.userId.toString();
             Set<String> recommendations = jedis.smembers("UserRecommendations:" + userID);
-            recommendations = recommendations != null ? recommendations : Collections.emptySet();
+            recommendations = (recommendations != null && !recommendations.isEmpty()) ? recommendations : jedis.smembers("topProducts");
             recommendations = recommendations.stream().filter(Objects::nonNull).collect(Collectors.toSet());
+            recommendations = recommendations.stream()
+                    .limit(MAX_RECOMMENDATION_SIZE)
+                    .collect(Collectors.toSet());
             return new Tuple2<>(userID, recommendations);
 
         }
