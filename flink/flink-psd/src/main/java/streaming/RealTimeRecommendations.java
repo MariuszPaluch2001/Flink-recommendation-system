@@ -1,50 +1,34 @@
 package streaming;
 
-import org.apache.commons.lang3.ObjectUtils;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
-import org.apache.flink.api.common.functions.FilterFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.serialization.SimpleStringEncoder;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
-import org.apache.flink.api.java.operators.MapOperator;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
-import org.apache.flink.connector.kafka.source.reader.deserializer.KafkaRecordDeserializationSchema;
-import org.apache.flink.graph.Vertex;
-import org.apache.flink.shaded.curator5.org.apache.curator.framework.recipes.locks.PredicateResults;
-import org.apache.flink.streaming.api.CheckpointingMode;
-import org.apache.flink.streaming.api.datastream.AllWindowedStream;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.PrintSink;
-import org.apache.flink.streaming.api.functions.sink.PrintSinkFunction;
-import org.apache.flink.streaming.api.functions.sink.filesystem.StreamingFileSink;
-import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows;
-import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
+import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer;
 import org.apache.flink.streaming.connectors.redis.RedisSink;
 import org.apache.flink.streaming.connectors.redis.common.config.FlinkJedisPoolConfig;
 import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommand;
 import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommandDescription;
 import org.apache.flink.streaming.connectors.redis.common.mapper.RedisMapper;
-import org.apache.kafka.common.serialization.StringDeserializer;
-import org.apache.kafka.common.serialization.StringSerializer;
 import redis.clients.jedis.Jedis;
+import streaming.models.KafkaOutput;
+import streaming.models.KafkaOutputSerialization;
 import streaming.models.Review;
 import streaming.models.ReviewDeserialization;
-import org.apache.flink.streaming.api.windowing.time.Time;
-import org.apache.flink.api.common.serialization.SimpleStringEncoder;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.connector.file.sink.FileSink;
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.DefaultRollingPolicy;
 
-import java.util.Collections;
-import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -68,20 +52,32 @@ public class RealTimeRecommendations {
         SingleOutputStreamOperator<Tuple2<String, Set<String>>> userGroup = ds
                 .map(new RedisUserRecommendationMapping());
 
-        final FileSink<String> sink = FileSink
-                .forRowFormat(new Path("/home/psd/output"), new SimpleStringEncoder<String>("UTF-8"))
-                .withRollingPolicy(
-                        DefaultRollingPolicy.builder()
-                                .withRolloverInterval(1)
-                                .withInactivityInterval(1)
-                                .withMaxPartSize(1024 * 1024 * 1024)
-                                .build())
-                .build();
-        SingleOutputStreamOperator<String> fileOutput = userGroup
+//        final FileSink<String> sink = FileSink
+//                .forRowFormat(new Path("/home/psd/output"), new SimpleStringEncoder<String>("UTF-8"))
+//                .withRollingPolicy(
+//                        DefaultRollingPolicy.builder()
+//                                .withRolloverInterval(1)
+//                                .withInactivityInterval(1)
+//                                .withMaxPartSize(1024 * 1024 * 1024)
+//                                .build())
+//                .build();
+        SingleOutputStreamOperator<KafkaOutput> outputStream = userGroup
                 .map(
-                    (MapFunction<Tuple2<String, Set<String>>, String>) val -> val.f0 + ":" + val.f1
+                    (MapFunction<Tuple2<String, Set<String>>, KafkaOutput>) val -> new KafkaOutput(Long.valueOf(val.f0), val.f1)
                 );
-        fileOutput.sinkTo(sink);
+//        fileOutput.sinkTo(sink);
+        KafkaRecordSerializationSchema<KafkaOutput> serializer = KafkaRecordSerializationSchema.builder()
+                .setValueSerializationSchema(new KafkaOutputSerialization())
+                .setTopic("Output")
+                .build();
+
+        KafkaSink<KafkaOutput> sink = KafkaSink.<KafkaOutput>builder()
+                .setBootstrapServers("localhost:9092")
+                .setRecordSerializer(serializer)
+                .build();
+
+        outputStream.sinkTo(sink);
+
         env.execute();
     }
     public static class userRatingMapper implements RedisMapper<Review> {

@@ -18,13 +18,8 @@ import redis.clients.jedis.Jedis;
 import java.util.*;
 
 public class Recommendations {
-    private static String recommendationsInputPath = null;
 
     public static void main(String[] args) throws Exception {
-        if (!parseParameters(args)) {
-            System.out.println("Path to data file doesn't specified in args.");
-            return;
-        }
 
         ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
         Jedis jedis = new Jedis("localhost");
@@ -148,24 +143,19 @@ public class Recommendations {
 //                .filter(new FilterBadRatings());
     }
 
-    private static MapOperator<Tuple3<Long, Long, Double>, Edge<Long, Double>> getEdgeList(ExecutionEnvironment env) {
-        return env.readCsvFile(recommendationsInputPath)
-                .lineDelimiter("\n")
-                .fieldDelimiter(",")
-                .types(Long.class, Long.class, Double.class)
-                .filter(value -> value.f0 < 1000)
-                .filter(new FilterBadRatings())
-                .map(new MapFunction<Tuple3<Long, Long, Double>, Edge<Long, Double>>() {
-                    public Edge<Long, Double> map(Tuple3<Long, Long, Double> e) {
-                        return new Edge<>(e.f0, e.f1, e.f2);
-                    }
-                });
-    }
-
-    private static boolean parseParameters(String[] args) {
-        recommendationsInputPath = args[0];
-        return true;
-    }
+//    private static MapOperator<Tuple3<Long, Long, Double>, Edge<Long, Double>> getEdgeList(ExecutionEnvironment env) {
+//        return env.readCsvFile(recommendationsInputPath)
+//                .lineDelimiter("\n")
+//                .fieldDelimiter(",")
+//                .types(Long.class, Long.class, Double.class)
+//                .filter(value -> value.f0 < 1000)
+//                .filter(new FilterBadRatings())
+//                .map(new MapFunction<Tuple3<Long, Long, Double>, Edge<Long, Double>>() {
+//                    public Edge<Long, Double> map(Tuple3<Long, Long, Double> e) {
+//                        return new Edge<>(e.f0, e.f1, e.f2);
+//                    }
+//                });
+//    }
 
     private static final class CreateSimilarUserEdges implements GroupReduceFunction<Edge<Long, Double>, Edge<Long, NullValue>> {
 
