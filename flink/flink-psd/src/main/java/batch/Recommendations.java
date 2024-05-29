@@ -27,7 +27,8 @@ public class Recommendations {
         }
 
         ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-        FilterOperator<Tuple3<Long, Long, Double>> reviews = getReviews(env);
+        Jedis jedis = new Jedis("localhost");
+        FilterOperator<Tuple3<Long, Long, Double>> reviews = getReviews(env, jedis);
         DataSet<Edge<Long, Double>> edgeList = reviews.map(new MapFunction<Tuple3<Long, Long, Double>, Edge<Long, Double>>() {
             public Edge<Long, Double> map(Tuple3<Long, Long, Double> e) {
                 return new Edge<>(e.f0, e.f1, e.f2);
@@ -52,7 +53,7 @@ public class Recommendations {
             groupUsers.computeIfAbsent(groupID, k -> new HashSet<>()).add(userID);
         }
 
-        Jedis jedis = new Jedis("localhost");
+
         jedis
                 .keys("UserRecommendations:*")
                 .forEach(jedis::del);
@@ -123,13 +124,28 @@ public class Recommendations {
         }, env);
     }
 
-    private static FilterOperator<Tuple3<Long, Long, Double>> getReviews(ExecutionEnvironment env) {
-        return env.readCsvFile(recommendationsInputPath)
-                .lineDelimiter("\n")
-                .fieldDelimiter(",")
-                .types(Long.class, Long.class, Double.class)
+    private static FilterOperator<Tuple3<Long, Long, Double>> getReviews(ExecutionEnvironment env, Jedis jedis) {
+        ArrayList<Tuple3<Long, Long, Double>> reviews =  new ArrayList<Tuple3<Long, Long, Double>>();
+        for (String users : jedis.keys("userRatings:*")) {
+            Long userID = Long.valueOf(users.split(":")[1]);
+            for (String review : jedis.smembers(users)) {
+                String [] parsed = review.split(":");
+                Long productID = Long.valueOf(parsed[0]);
+                Double rate = Double.valueOf(parsed[1]);
+                reviews.add(
+                        new Tuple3<>(userID, productID, rate)
+                );
+            }
+        }
+        return env.fromCollection(reviews)
                 .filter(value -> value.f0 < 1000)
                 .filter(new FilterBadRatings());
+//        return env.readCsvFile(recommendationsInputPath)
+//                .lineDelimiter("\n")
+//                .fieldDelimiter(",")
+//                .types(Long.class, Long.class, Double.class)
+//                .filter(value -> value.f0 < 1000)
+//                .filter(new FilterBadRatings());
     }
 
     private static MapOperator<Tuple3<Long, Long, Double>, Edge<Long, Double>> getEdgeList(ExecutionEnvironment env) {
