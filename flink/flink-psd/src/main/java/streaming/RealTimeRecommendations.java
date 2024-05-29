@@ -27,6 +27,8 @@ import org.apache.flink.streaming.api.functions.sink.PrintSinkFunction;
 import org.apache.flink.streaming.api.functions.sink.filesystem.StreamingFileSink;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
+import org.apache.flink.streaming.connectors.redis.RedisSink;
+import org.apache.flink.streaming.connectors.redis.common.config.FlinkJedisPoolConfig;
 import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommand;
 import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommandDescription;
 import org.apache.flink.streaming.connectors.redis.common.mapper.RedisMapper;
@@ -51,7 +53,7 @@ public class RealTimeRecommendations {
     public static void main(String[] args) throws Exception {
         System.out.println("Real time recommendation");
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-
+        FlinkJedisPoolConfig conf = new FlinkJedisPoolConfig.Builder().setHost("127.0.0.1").build();
         KafkaSource<Review> source = KafkaSource.<Review>builder()
                 .setBootstrapServers("localhost:9092")
                 .setTopics("Reviews")
@@ -61,7 +63,7 @@ public class RealTimeRecommendations {
                 .build();
 
         DataStream<Review> ds = env.fromSource(source, WatermarkStrategy.forMonotonousTimestamps(), "Kafka Source");
-
+        ds.addSink(new RedisSink<>(conf, new userRatingMapper()));
         SingleOutputStreamOperator<Tuple2<String, Set<String>>> userGroup = ds
                 .map(new RedisUserRecommendationMapping());
 
@@ -81,7 +83,7 @@ public class RealTimeRecommendations {
         dupa.sinkTo(sink);
         env.execute();
     }
-    public static class Mapper implements RedisMapper<Review> {
+    public static class userRatingMapper implements RedisMapper<Review> {
 
         @Override
         public RedisCommandDescription getCommandDescription() {
@@ -90,12 +92,12 @@ public class RealTimeRecommendations {
 
         @Override
         public String getKeyFromData(Review data) {
-            return "";
+            return "userRatings:" + data.userId;
         }
 
         @Override
         public String getValueFromData(Review data) {
-            return "";
+            return data.productId + ":" + data.review;
         }
     }
     public static class RedisUserRecommendationMapping extends RichMapFunction<Review, Tuple2<String, Set<String>>> {
