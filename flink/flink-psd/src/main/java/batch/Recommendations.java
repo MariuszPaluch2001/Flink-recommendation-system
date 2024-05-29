@@ -22,8 +22,8 @@ import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommand;
 import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommandDescription;
 import org.apache.flink.streaming.connectors.redis.common.mapper.RedisMapper;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
+import java.util.stream.Collectors;
 
 public class Recommendations {
     private static String recommendationsInputPath = null;
@@ -35,9 +35,6 @@ public class Recommendations {
         }
 
         ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-        StreamExecutionEnvironment env2 = StreamExecutionEnvironment.getExecutionEnvironment();
-        FlinkJedisPoolConfig conf = new FlinkJedisPoolConfig.Builder().setHost("127.0.0.1").build();
-
         DataSet<Edge<Long, Double>> edgeList = getEdgeList(env);
         Graph<Long, Long, Double> userTopProducts = getUserTopProducts(edgeList, env);
         DataSet<Edge<Long, NullValue>> similarUsers = getSimilarUsers(userTopProducts);
@@ -45,12 +42,29 @@ public class Recommendations {
         DataSet<Tuple2<Long, Long>> idsWithInitialLabels = initWithLabels(similarUsersGraph);
         DataSet<Vertex<Long, Long>> verticesWithCommunity = runLabelPropagation(similarUsersGraph, idsWithInitialLabels);
 
-        DataStreamSource<Vertex<Long, Long>> stream = env2.fromCollection(verticesWithCommunity.collect());
-        stream.addSink(new RedisSink<>(conf, new RedisUserGroupMapper()));
-        stream.addSink(new RedisSink<>(conf, new RedisGroupUsersMapper()));
-        env2.execute();
+        Map<Long, Set<Long>> groupUsers = new HashMap<>();
+        for (Vertex<Long, Long> vertex : verticesWithCommunity.collect()) {
+            Long userID = vertex.getId();
+            Long groupID = vertex.getValue();
+            groupUsers.computeIfAbsent(groupID, k -> new HashSet<>()).add(userID);
+        }
 
+        Jedis jedis = new Jedis("localhost");
+        jedis
+                .keys("UserCommunitySet:*")
+                .forEach(jedis::del);
+
+        for (Vertex<Long, Long> vertex : verticesWithCommunity.collect()) {
+            String userID = vertex.getId().toString();
+            for (Long similiar : groupUsers.get(vertex.getValue())) {
+                String similiarID = similiar.toString();
+                if (!similiarID.equals(userID))
+                    jedis.sadd("UserCommunitySet:" + userID, similiarID);
+            }
+        }
         showDetectedCommunitiesSize(verticesWithCommunity);
+
+        jedis.close();
     }
 
     private static void showDetectedCommunitiesSize(DataSet<Vertex<Long, Long>> verticesWithCommunity) throws Exception {
