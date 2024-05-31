@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "kafka-node": "^5.0.0",
+    "websocket": "^1.0.35"
+  }
+}
