@@ -7,7 +7,7 @@ var Consumer = kafka.Consumer,
     client = new kafka.KafkaClient("localhost:9092"),
     consumer = new Consumer(
         client, [{
-            topic: 'Test',
+            topic: 'Output',
             partition: 0
         }], {
             autoCommit: false

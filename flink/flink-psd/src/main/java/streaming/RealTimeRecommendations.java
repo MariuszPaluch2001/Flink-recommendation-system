@@ -3,8 +3,6 @@ package streaming;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
-import org.apache.flink.api.common.serialization.SimpleStringEncoder;
-import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
@@ -14,20 +12,19 @@ import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsIni
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer;
 import org.apache.flink.streaming.connectors.redis.RedisSink;
 import org.apache.flink.streaming.connectors.redis.common.config.FlinkJedisPoolConfig;
 import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommand;
 import org.apache.flink.streaming.connectors.redis.common.mapper.RedisCommandDescription;
 import org.apache.flink.streaming.connectors.redis.common.mapper.RedisMapper;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.Response;
+import redis.clients.jedis.Transaction;
 import streaming.models.KafkaOutput;
 import streaming.models.KafkaOutputSerialization;
 import streaming.models.Review;
 import streaming.models.ReviewDeserialization;
-import org.apache.flink.core.fs.Path;
-import org.apache.flink.connector.file.sink.FileSink;
-import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.DefaultRollingPolicy;
+
 
 import java.util.Objects;
 import java.util.Set;
@@ -39,7 +36,7 @@ public class RealTimeRecommendations {
         System.out.println("Real time recommendation");
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         FlinkJedisPoolConfig conf = new FlinkJedisPoolConfig.Builder().setHost("127.0.0.1").build();
-        KafkaSource<Review> source = KafkaSource.<Review>builder()
+        KafkaSource < Review > source = KafkaSource. < Review > builder()
                 .setBootstrapServers("localhost:9092")
                 .setTopics("Reviews")
                 .setGroupId("group")
@@ -47,31 +44,22 @@ public class RealTimeRecommendations {
                 .setValueOnlyDeserializer(new ReviewDeserialization())
                 .build();
 
-        DataStream<Review> ds = env.fromSource(source, WatermarkStrategy.forMonotonousTimestamps(), "Kafka Source");
-        ds.addSink(new RedisSink<>(conf, new userRatingMapper()));
-        SingleOutputStreamOperator<Tuple2<String, Set<String>>> userGroup = ds
+        DataStream < Review > ds = env.fromSource(source, WatermarkStrategy.forMonotonousTimestamps(), "Kafka Source");
+        ds.addSink(new RedisSink < > (conf, new userRatingMapper()));
+        SingleOutputStreamOperator < Tuple2 < String, Set < String >>> userGroup = ds
                 .map(new RedisUserRecommendationMapping());
 
-//        final FileSink<String> sink = FileSink
-//                .forRowFormat(new Path("/home/psd/output"), new SimpleStringEncoder<String>("UTF-8"))
-//                .withRollingPolicy(
-//                        DefaultRollingPolicy.builder()
-//                                .withRolloverInterval(1)
-//                                .withInactivityInterval(1)
-//                                .withMaxPartSize(1024 * 1024 * 1024)
-//                                .build())
-//                .build();
-        SingleOutputStreamOperator<KafkaOutput> outputStream = userGroup
+        SingleOutputStreamOperator < KafkaOutput > outputStream = userGroup
                 .map(
-                    (MapFunction<Tuple2<String, Set<String>>, KafkaOutput>) val -> new KafkaOutput(Long.valueOf(val.f0), val.f1)
+                        (MapFunction < Tuple2 < String, Set < String >> , KafkaOutput > ) val -> new KafkaOutput(Long.valueOf(val.f0), val.f1)
                 );
-//        fileOutput.sinkTo(sink);
-        KafkaRecordSerializationSchema<KafkaOutput> serializer = KafkaRecordSerializationSchema.builder()
+
+        KafkaRecordSerializationSchema < KafkaOutput > serializer = KafkaRecordSerializationSchema.builder()
                 .setValueSerializationSchema(new KafkaOutputSerialization())
                 .setTopic("Output")
                 .build();
 
-        KafkaSink<KafkaOutput> sink = KafkaSink.<KafkaOutput>builder()
+        KafkaSink < KafkaOutput > sink = KafkaSink. < KafkaOutput > builder()
                 .setBootstrapServers("localhost:9092")
                 .setRecordSerializer(serializer)
                 .build();
@@ -80,7 +68,7 @@ public class RealTimeRecommendations {
 
         env.execute();
     }
-    public static class userRatingMapper implements RedisMapper<Review> {
+    public static class userRatingMapper implements RedisMapper < Review > {
 
         @Override
         public RedisCommandDescription getCommandDescription() {
@@ -97,19 +85,28 @@ public class RealTimeRecommendations {
             return data.productId + ":" + data.review;
         }
     }
-    public static class RedisUserRecommendationMapping extends RichMapFunction<Review, Tuple2<String, Set<String>>> {
+    public static class RedisUserRecommendationMapping extends RichMapFunction < Review, Tuple2 < String, Set < String >>> {
         private transient Jedis jedis;
 
         @Override
-        public Tuple2<String, Set<String>> map(Review review) {
+        public Tuple2 < String,
+                Set < String >> map(Review review) {
             String userID = review.userId.toString();
-            Set<String> recommendations = jedis.smembers("UserRecommendations:" + userID);
-            recommendations = (recommendations != null && !recommendations.isEmpty()) ? recommendations : jedis.smembers("topProducts");
+            Transaction t = jedis.multi();
+            Response<Set<String>> tRecommend = t.smembers("UserRecommendations:" + userID);
+            t.exec();
+            Set < String > recommendations = tRecommend.get();
+
+            t = jedis.multi();
+            Response<Set<String>> tTopProducts = t.smembers("topProducts");;
+            t.exec();
+            recommendations = (recommendations != null && !recommendations.isEmpty()) ? recommendations : tTopProducts.get();
+
             recommendations = recommendations.stream().filter(Objects::nonNull).collect(Collectors.toSet());
             recommendations = recommendations.stream()
                     .limit(MAX_RECOMMENDATION_SIZE)
                     .collect(Collectors.toSet());
-            return new Tuple2<>(userID, recommendations);
+            return new Tuple2 < > (userID, recommendations);
 
         }
 

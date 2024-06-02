@@ -3,12 +3,11 @@ package streaming.models;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import streaming.models.Review;
 
 import java.io.IOException;
 
 public class ReviewDeserialization implements
-        DeserializationSchema<Review> {
+        DeserializationSchema < Review > {
 
     static ObjectMapper objectMapper = new ObjectMapper();
 
@@ -23,7 +22,7 @@ public class ReviewDeserialization implements
     }
 
     @Override
-    public TypeInformation<Review> getProducedType() {
+    public TypeInformation < Review > getProducedType() {
         return TypeInformation.of(Review.class);
     }
 }

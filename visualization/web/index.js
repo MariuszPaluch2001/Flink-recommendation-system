@@ -12,10 +12,12 @@ $(document).ready(function() {
 
             ws.onmessage = function(evt) {
                 var received_msg = evt.data;
+                res = JSON.parse(evt.data);
 		var li = document.createElement("li");
 		
 		var dataDisplay = document.getElementById("data-display");
-		li.textContent = evt.data;
+		console.log(res);
+		li.textContent = `Rekomendacje uzytkownika ${res["userId"]}: ${JSON.stringify(res["recommendedProducts"])}`;
 		dataDisplay.appendChild(li);
                 
                 console.log(received_msg);
