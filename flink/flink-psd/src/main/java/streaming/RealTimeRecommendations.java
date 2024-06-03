@@ -26,6 +26,7 @@ import streaming.models.Review;
 import streaming.models.ReviewDeserialization;
 
 
+import java.util.Collections;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -101,9 +102,10 @@ public class RealTimeRecommendations {
             Response<Set<String>> tTopProducts = t.smembers("topProducts");;
             t.exec();
             recommendations = (recommendations != null && !recommendations.isEmpty()) ? recommendations : tTopProducts.get();
-
-            recommendations = recommendations.stream().filter(Objects::nonNull).collect(Collectors.toSet());
-            recommendations = recommendations.stream()
+            recommendations = recommendations == null ? Collections.emptySet() : recommendations;
+            recommendations = recommendations
+                    .stream()
+                    .filter(Objects::nonNull)
                     .limit(MAX_RECOMMENDATION_SIZE)
                     .collect(Collectors.toSet());
             return new Tuple2 < > (userID, recommendations);
