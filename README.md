@@ -2,7 +2,7 @@
 1. `sudo snap install redis`
 2. `sudo apt install redis-tools`
 # Kompilacja projektu
-1. Aby skompilować wybrany moduł projektu (RealTimeRecommendations, Recommendations czy ProductReviewAggregation) należy ustawić odpowieni MainClass w pliku pom.xml
+1. Aby skompilować wybrany moduł projektu (RealTimeRecommendations, Recommendations czy ProductReviewAggregation) należy ustawić odpowieni MainClass w pliku pom.xml, następnie uruchomić Mavena z podanym opcjami: `mvn clean install`
 # Uruchomienie projektu
 1. Sprawdzić działanie Kafki
 2. Włączyś klaster Flinka (`start-cluster.sh`)
